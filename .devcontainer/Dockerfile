@@ -9,4 +9,4 @@ RUN wget https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1
     && rm cmake-3.25.1-linux-x86_64.sh
 
 # Install ruby
-RUN apt-get update && apt-get install -y ruby
+RUN apt-get update && apt-get install -y ruby docker.io
