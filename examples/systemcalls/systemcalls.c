@@ -1,4 +1,12 @@
 #include "systemcalls.h"
+#include <errno.h>    // for errno
+#include <stdlib.h>   // for system()
+#include <stdio.h>    // for fprintf()
+#include <syslog.h>   // for syslog()
+#include <unistd.h>   // for fork(), execv()
+#include <sys/wait.h> // for wait()
+#include <string.h>   // for strerror
+#include <fcntl.h>    // for O_WRONLY, O_TRUNC, O_CREAT
 
 /**
  * @param cmd the command to execute with system()
@@ -9,13 +17,13 @@
 */
 bool do_system(const char *cmd)
 {
+    const int result = system(cmd);
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    if (result != 0)
+    {
+        syslog(LOG_ERR, "Command '%s' failed with return code %d", cmd, result);
+        return false;
+    }
 
     return true;
 }
@@ -38,30 +46,51 @@ bool do_exec(int count, ...)
 {
     va_list args;
     va_start(args, count);
-    char * command[count+1];
+    char *command[count + 1];
     int i;
-    for(i=0; i<count; i++)
+    for (i = 0; i < count; i++)
     {
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
-
-    va_end(args);
-
-    return true;
+    pid_t pid = fork();
+    if (pid == -1)
+    {
+        syslog(LOG_ERR, "Fork failed: %s", strerror(errno));
+        va_end(args);
+        return false;
+    }
+    else if (pid == 0)
+    {
+        // Inside the child process
+        execv(command[0], command);
+        // If execv returns, it must have failed
+        syslog(LOG_ERR, "Execv failed: %s", strerror(errno));
+        exit(1);
+    }
+    else
+    {
+        // Inside the parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1)
+        {
+            syslog(LOG_ERR, "Waitpid failed: %s", strerror(errno));
+            va_end(args);
+            return false;
+        }
+        if (status == 0)
+        {
+            va_end(args);
+            return true;
+        }
+        else
+        {
+            syslog(LOG_ERR, "Command failed with status %d", status);
+            va_end(args);
+            return false;
+        }
+    }
 }
 
 /**
@@ -80,18 +109,61 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
+    int fd = open(outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644);
 
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
+    if (fd < 0)
+    {
+        syslog(LOG_ERR, "open '%s' failed: %s", outputfile, strerror(errno));
+        exit(1);
+    }
+
+    pid_t pid = fork();
+    if (pid == -1)
+    {
+        syslog(LOG_ERR, "Fork failed: %s", strerror(errno));
+        va_end(args);
+        return false;
+    }
+    else if (pid == 0)
+    {
+        // Inside the child process
+        const int stdout_fd = 1;
+
+        if (dup2(fd, stdout_fd) < 0)
+        {
+            syslog(LOG_ERR, "dup2 '%d' failed: %s", fd, strerror(errno));
+            exit(1);
+        }
+
+        close(fd);
+        execvp(command[0], command);
+        // If execv returns, it must have failed
+        syslog(LOG_ERR, "execvp '%s' failed: %s", command[0], strerror(errno));
+        exit(1);
+    }
+    else
+    {
+        // Inside the parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1)
+        {
+            syslog(LOG_ERR, "Waitpid failed: %s", strerror(errno));
+            va_end(args);
+            return false;
+        }
+        if (status == 0)
+        {
+            va_end(args);
+            return true;
+        }
+        else
+        {
+            syslog(LOG_ERR, "Command failed with status %d", status);
+            va_end(args);
+            return false;
+        }
+    }
 
     va_end(args);
 
