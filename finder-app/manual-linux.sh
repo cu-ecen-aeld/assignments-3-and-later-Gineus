@@ -35,18 +35,23 @@ if [ ! -d "${OUTDIR}/linux-stable" ]; then
 fi
 if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     cd linux-stable
+
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
 
-    # Clean the kernel build tree
+    echo "Clean the kernel build tree"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
-    # Create a default configuration for the kernel
+
+    echo "Create a default configuration for the kernel"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    # Build the kernel image
+
+    echo "Build the kernel image"
     make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
-    # Build kernel modules
+
+    echo "Build kernel modules"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
-    # Build device tree blobs
+
+    echo "Build device tree blobs"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
 fi
 
@@ -74,12 +79,18 @@ then
     git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-    # TODO:  Configure busybox
+
+    # Clean the build environment
+    make distclean
+    # Create a default configuration for BusyBox
+    make defconfig
 else
     cd busybox
 fi
 
-# TODO: Make and install busybox
+# Make and install busybox
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=${OUTDIR}/rootfs install
 
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
