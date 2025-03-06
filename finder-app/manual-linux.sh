@@ -21,19 +21,19 @@ else
 	echo "Using passed directory ${OUTDIR} for output"
 fi
 
-mkdir -p ${OUTDIR}
+mkdir -p "${OUTDIR}"
 
 if [ ! -d "${OUTDIR}" ]; then    
     echo "Error: ${OUTDIR} could not be created"
     exit 1
 fi
 
-cd "$OUTDIR"
+cd "${OUTDIR}"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
 
 	git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
 fi
-if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
+if [ ! -e "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" ]; then
     cd linux-stable
 
     echo "Checking out version ${KERNEL_VERSION}"
@@ -46,7 +46,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
 
     echo "Build the kernel image"
-    make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
+    make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
 
     echo "Build kernel modules"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
@@ -58,22 +58,22 @@ fi
 echo "Adding the Image in outdir"
 
 echo "Creating the staging directory for the root filesystem"
-cd "$OUTDIR"
+cd "${OUTDIR}"
 if [ -d "${OUTDIR}/rootfs" ]
 then
 	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
-    sudo rm  -rf ${OUTDIR}/rootfs
+    sudo rm  -rf "${OUTDIR}/rootfs"
 fi
 
-mkdir -p ${OUTDIR}/rootfs
-cd ${OUTDIR}/rootfs
+mkdir -p "${OUTDIR}/rootfs"
+cd "${OUTDIR}/rootfs"
 
 # Create necessary base directories
 mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
 mkdir -p usr/bin usr/lib usr/sbin
 mkdir -p var/log
 
-cd "$OUTDIR"
+cd "${OUTDIR}"
 if [ ! -d "${OUTDIR}/busybox" ]
 then
     git clone git://busybox.net/busybox.git
@@ -89,8 +89,8 @@ else
 fi
 
 # Make and install busybox
-make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
-make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=${OUTDIR}/rootfs install
+make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
 
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
