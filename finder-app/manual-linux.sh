@@ -127,6 +127,7 @@ cp "${FINDER_APP_DIR}/dependencies.sh" "${OUTDIR}/rootfs/home"
 cp "${FINDER_APP_DIR}/writer" "${OUTDIR}/rootfs/home"
 cp "${FINDER_APP_DIR}/../conf/username.txt" "${OUTDIR}/rootfs/home"
 cp "${FINDER_APP_DIR}/../conf/assignment.txt" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/autorun-qemu.sh" "${OUTDIR}/rootfs/home"
 
 # Chown the root directory
 sudo chown -R root:root ${OUTDIR}/rootfs
