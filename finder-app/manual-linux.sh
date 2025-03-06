@@ -119,9 +119,22 @@ cd ${FINDER_APP_DIR}
 make clean
 make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
 
-# TODO: Copy the finder related scripts and executables to the /home directory
+# Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
+cp "${FINDER_APP_DIR}/finder.sh" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/finder-test.sh" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/dependencies.sh" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/writer" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/../conf/username.txt" "${OUTDIR}/rootfs/home"
+cp "${FINDER_APP_DIR}/../conf/assignment.txt" "${OUTDIR}/rootfs/home"
 
-# TODO: Chown the root directory
+# Chown the root directory
+sudo chown -R root:root ${OUTDIR}/rootfs
 
-# TODO: Create initramfs.cpio.gz
+# Create initramfs.cpio.gz
+cd "${OUTDIR}/rootfs"
+find . | cpio -H newc -ov --owner root:root > "${OUTDIR}/initramfs.cpio"
+
+gzip -f "${OUTDIR}/initramfs.cpio"
+
+echo "Successfully created initramfs.cpio.gz at ${OUTDIR}/initramfs.cpio.gz"
