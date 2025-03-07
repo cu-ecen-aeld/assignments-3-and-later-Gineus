@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/vscode/devcontainers/base:ubuntu-22.04
 
-RUN apt-get update && apt-get install -y build-essential git ruby wget gdb file flex bison bc cpio
+RUN apt-get update && apt-get install -y build-essential git ruby wget gdb file flex bison bc cpio qemu-system-arm qemu-system-aarch64
 
 # Install CMake 3.25.1
 RUN wget https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1-linux-x86_64.sh \
