@@ -75,19 +75,17 @@ mkdir -p usr/bin usr/lib usr/sbin
 mkdir -p var/log
 
 cd "${OUTDIR}"
-if [ ! -d "${OUTDIR}/busybox" ]
-then
-    git clone git://busybox.net/busybox.git
-    cd busybox
-    git checkout ${BUSYBOX_VERSION}
 
-    # Clean the build environment
-    make distclean
-    # Create a default configuration for BusyBox
-    make defconfig
-else
-    cd busybox
+if [ ! -d "${OUTDIR}/busybox" ]; then
+    git clone https://github.com/mirror/busybox.git --depth 1 --single-branch --branch ${BUSYBOX_VERSION}
 fi
+
+cd busybox
+
+# Clean the build environment
+make distclean
+# Create a default configuration for BusyBox
+make defconfig
 
 # Make and install busybox
 make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
