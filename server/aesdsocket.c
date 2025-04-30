@@ -1,137 +1,202 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <syslog.h> // Include syslog header
-#include <signal.h> // Include signal header
+#include <signal.h> // Include signal handling library
+#include <fcntl.h> // Include file control options
+#include <stdio.h> // Include standard input/output library
+#include <stdlib.h> // Include standard library for memory allocation, process control, etc.
+#include <string.h> // Include string manipulation functions
+#include <sys/socket.h> // Include socket programming library
+#include <netinet/in.h> // Include Internet address family definitions
+#include <arpa/inet.h> // Include definitions for internet operations
+#include <unistd.h> // Include POSIX API for system calls
+#include <syslog.h> // Include system logging library
+#include <errno.h> // Include error handling definitions
 
-#define PORT 9000
-#define BACKLOG 10
-#define BUFFER_SIZE 1024 * 1024
-#define SOCKET_ERROR -1
+#define PORT 9000 // Define the port number for the server
+#define BACKLOG 10 // Define the maximum number of pending connections in the queue
+#define FILE_PATH "/var/tmp/aesdsocketdata" // Define the file path for storing received data
 
-volatile sig_atomic_t stop_server = 0; // Flag to indicate server should stop
+int server_socket = -1; // Global variable for the server socket descriptor
+int client_socket = -1; // Global variable for the client socket descriptor
+int file_fd = -1; // Global variable for the file descriptor
+int running = 1; // Global flag to indicate if the server is running
 
-void handle_signal(int signal) {
-    (void)signal; // Mark parameter as unused to suppress warning
-    syslog(LOG_INFO, "Caught signal, exiting"); // Log signal caught
-    stop_server = 1; // Set flag to stop the server
+void cleanup() {
+    // Close the client socket if it is open
+    if (client_socket != -1) close(client_socket);
+    // Close the server socket if it is open
+    if (server_socket != -1) close(server_socket);
+    // Close the file descriptor if it is open
+    if (file_fd != -1) close(file_fd);
+    // Remove the temporary file
+    remove(FILE_PATH);
+    // Log a message indicating the server is exiting
+    syslog(LOG_INFO, "Caught signal, exiting");
+    // Close the system logger
+    closelog();
 }
 
-int main() {
-    // Register signal handlers
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handle_signal;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+void signal_handler(int signo) {
+    running = 0; // Stop the server loop
+    cleanup();   // Perform cleanup
+    exit(EXIT_SUCCESS); // Exit the program
+}
 
-    int server_socket, client_socket;
+void daemonize() {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) exit(EXIT_SUCCESS); // Parent exits
+    if (setsid() < 0) exit(EXIT_FAILURE); // Create new session
+    if (chdir("/") < 0) exit(EXIT_FAILURE); // Change working directory
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+}
+
+int main(int argc, char *argv[]) {
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
-    const char *out_file = "/var/tmp/aesdsocketdata";
+    char buffer[2];
+    ssize_t bytes_received, bytes_read;
+    char *newline_ptr;
 
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket < 0) {
-        perror("Socket creation failed");
-        exit(SOCKET_ERROR);
+    openlog("aesdsocket", LOG_PID, LOG_USER);
+
+    // Handle signals
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    // Check for daemon mode
+    if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        daemonize();
     }
 
+    // Create socket
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("Socket creation failed");
+        syslog(LOG_ERR, "Socket creation failed: %s", strerror(errno));
+        return -1;
+    }
+
+    // Bind socket
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Bind failed");
-        close(server_socket);
-        exit(SOCKET_ERROR);
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Socket bind failed");
+        syslog(LOG_ERR, "Socket bind failed: %s", strerror(errno));
+        cleanup();
+        return -1;
     }
 
-    if (listen(server_socket, BACKLOG) < 0) {
-        perror("Listen failed");
-        close(server_socket);
-        exit(SOCKET_ERROR);
+    // Listen for connections
+    if (listen(server_socket, BACKLOG) == -1) {
+        perror("Socket listen failed");
+        syslog(LOG_ERR, "Socket listen failed: %s", strerror(errno));
+        cleanup();
+        return -1;
     }
 
-    printf("Server is listening on port %d\n", PORT);
-    openlog("aesdsocket", LOG_PID, LOG_USER); // Open syslog
+    while (running) {
+        if (server_socket == -1) {
+            perror("Invalid server socket");
+            syslog(LOG_ERR, "Invalid server socket");
+            cleanup();
+            return -1;
+        }
 
-    while (!stop_server) { // Loop until stop_server is set
         client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
-        if (client_socket < 0) {
-            if (stop_server) break; // Exit loop if interrupted by signal
-            perror("Accept failed");
-            continue;
+        if (client_socket == -1) {
+            if (errno == EINTR) continue; // Interrupted by signal, check running flag
+            perror("Socket accept failed");
+            syslog(LOG_ERR, "Socket accept failed: %s", strerror(errno));
+            cleanup();
+            return -1;
         }
 
-        printf("Accepted connection from %s\n", inet_ntoa(client_addr.sin_addr));
-        syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr)); // Log accepted connection
-        
-        char buffer[BUFFER_SIZE];
-        ssize_t bytes_read;
-        FILE *file = fopen(out_file, "a+");
+        syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
 
-        if (file == NULL) {
-            perror("File open failed");
-            close(server_socket);
-            exit(SOCKET_ERROR);
+        // Open the file for appending, create if it doesn't exist
+        file_fd = open(FILE_PATH, O_CREAT | O_APPEND | O_RDWR, 0644);
+        if (file_fd == -1) {
+            perror("Failed to open file");
+            syslog(LOG_ERR, "Failed to open file %s: %s", FILE_PATH, strerror(errno));
+            cleanup();
+            return -1;
         }
 
-        while ((bytes_read = read(client_socket, buffer, sizeof(buffer))) > 0) {
-            ssize_t start = 0;
-            for (size_t i = 0; i < (size_t)bytes_read; i++) {
-                if (buffer[i] == '\n') {
-                    buffer[i + 1] = '\0'; 
-                    if (fwrite(&buffer[start], 1, i - start + 1, file) < i - start + 1) {
-                        perror("File write failed");
-                        close(client_socket);
-                        fclose(file);
-                        exit(SOCKET_ERROR);
-                    }
-                    start = i + 1;
+        // Receive data and append to file
+        while ((bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
+            buffer[bytes_received] = '\0'; // Null-terminate the received data
+            char *start_ptr = buffer;
 
-                    // Send the full content of the file back to the client
-                    fflush(file); // Ensure all data is written to the file
-                    fseek(file, 0, SEEK_SET); // Rewind the file to the beginning
-                    char send_buffer[BUFFER_SIZE];
-                    size_t bytes_to_send;
-                    while ((bytes_to_send = fread(send_buffer, 1, sizeof(send_buffer), file)) > 0) {
-                        if (write(client_socket, send_buffer, bytes_to_send) < 0) {
-                            perror("Write to client failed");
-                            close(client_socket);
-                            fclose(file);
-                            exit(SOCKET_ERROR);
-                        }
-                    }
+            // Process received data to find complete packets
+            while ((newline_ptr = strchr(start_ptr, '\n')) != NULL) {
+                size_t packet_length = newline_ptr - start_ptr + 1;
+
+                // Write the complete packet to the file
+                if (write(file_fd, start_ptr, packet_length) == -1) {
+                    perror("File write failed");
+                    syslog(LOG_ERR, "File write failed: %s", strerror(errno));
+                    cleanup();
+                    return -1;
                 }
+
+                start_ptr = newline_ptr + 1; // Move to the next part of the buffer
+            }
+
+            // Handle any remaining data (incomplete packet)
+            if (start_ptr < buffer + bytes_received) {
+                size_t remaining_length = buffer + bytes_received - start_ptr;
+                if (write(file_fd, start_ptr, remaining_length) == -1) {
+                    perror("File write failed");
+                    syslog(LOG_ERR, "File write failed: %s", strerror(errno));
+                    cleanup();
+                    return -1;
+                }
+            }
+
+            // Send the full content of the file back to the client
+            lseek(file_fd, 0, SEEK_SET); // Reset file pointer to the beginning
+            while ((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0) {
+                if (send(client_socket, buffer, bytes_read, 0) == -1) {
+                    perror("Socket send failed");
+                    syslog(LOG_ERR, "Socket send failed: %s", strerror(errno));
+                    cleanup();
+                    return -1;
+                }
+            }
+
+            if (bytes_read == -1) {
+                perror("File read failed");
+                syslog(LOG_ERR, "File read failed: %s", strerror(errno));
+                cleanup();
+                return -1;
+            }
+
+            // Truncate the file to clear its contents
+            if (ftruncate(file_fd, 0) == -1) {
+                perror("File truncate failed");
+                syslog(LOG_ERR, "File truncate failed: %s", strerror(errno));
+                cleanup();
+                return -1;
             }
         }
 
-        if (bytes_read < 0) {
-            perror("Read failed");
+        if (bytes_received == -1) {
+            perror("Socket receive failed");
+            syslog(LOG_ERR, "Socket receive failed: %s", strerror(errno));
         }
 
-        close(client_socket);
-        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr)); // Log closed connection
-        fclose(file);
+        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
+        close(client_socket); // Close client socket after handling the connection
+        client_socket = -1;
     }
 
-    printf("Shutting down server...\n");
-    syslog(LOG_INFO, "Server shutting down");
-
-    // Delete the file /var/tmp/aesdsocketdata
-    if (remove(out_file) != 0) {
-        perror("Failed to delete file");
-        syslog(LOG_ERR, "Failed to delete file %s", out_file);
-    } else {
-        syslog(LOG_INFO, "Deleted file %s", out_file);
-    }
-
-    closelog(); // Close syslog
-    close(server_socket);
+    cleanup(); // Cleanup server resources only when exiting the loop
     return 0;
 }

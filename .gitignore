@@ -8,4 +8,4 @@ aesd-build
 test.sh.log
 actions-runner
 testfile.txt
-server/assdsocket
+server/aesdsocket
