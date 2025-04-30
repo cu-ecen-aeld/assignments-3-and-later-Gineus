@@ -57,10 +57,18 @@ void daemonize() {
 int main(int argc, char *argv[]) {
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
-    char buffer[2];
-    ssize_t bytes_received, bytes_read;
-    char *newline_ptr;
 
+    const int SOCKET_CHUNK_SIZE = 1024;
+    int socket_buffer_size = SOCKET_CHUNK_SIZE;
+
+    int total_bytes_received;
+
+    char *socket_buffer = malloc(socket_buffer_size); // Allocate initial buffer
+    if (!socket_buffer) {
+        syslog(LOG_ERR, "Failed to allocate initial buffer");
+        return -1;
+    }
+    
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
     // Handle signals
@@ -77,6 +85,7 @@ int main(int argc, char *argv[]) {
     if (server_socket == -1) {
         perror("Socket creation failed");
         syslog(LOG_ERR, "Socket creation failed: %s", strerror(errno));
+        free(socket_buffer);
         return -1;
     }
 
@@ -90,6 +99,7 @@ int main(int argc, char *argv[]) {
         perror("Socket bind failed");
         syslog(LOG_ERR, "Socket bind failed: %s", strerror(errno));
         cleanup();
+        free(socket_buffer);
         return -1;
     }
 
@@ -98,6 +108,7 @@ int main(int argc, char *argv[]) {
         perror("Socket listen failed");
         syslog(LOG_ERR, "Socket listen failed: %s", strerror(errno));
         cleanup();
+        free(socket_buffer);
         return -1;
     }
 
@@ -106,90 +117,72 @@ int main(int argc, char *argv[]) {
             perror("Invalid server socket");
             syslog(LOG_ERR, "Invalid server socket");
             cleanup();
+            free(socket_buffer);
             return -1;
         }
 
         client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
+
         if (client_socket == -1) {
             if (errno == EINTR) continue; // Interrupted by signal, check running flag
             perror("Socket accept failed");
             syslog(LOG_ERR, "Socket accept failed: %s", strerror(errno));
             cleanup();
+            free(socket_buffer);
             return -1;
         }
 
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
 
-        // Open the file for appending, create if it doesn't exist
-        file_fd = open(FILE_PATH, O_CREAT | O_APPEND | O_RDWR, 0644);
+        // Open the file for reading and appending, create if it doesn't exist
+        file_fd = open(FILE_PATH, O_CREAT | O_RDWR | O_APPEND, 0644);
+
         if (file_fd == -1) {
             perror("Failed to open file");
             syslog(LOG_ERR, "Failed to open file %s: %s", FILE_PATH, strerror(errno));
             cleanup();
+            free(socket_buffer);
             return -1;
         }
 
-        // Receive data and append to file
-        while ((bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
-            buffer[bytes_received] = '\0'; // Null-terminate the received data
-            char *start_ptr = buffer;
+        // Receive data dynamically
+        total_bytes_received = recv(client_socket, socket_buffer, socket_buffer_size, 0);
 
-            // Process received data to find complete packets
-            while ((newline_ptr = strchr(start_ptr, '\n')) != NULL) {
-                size_t packet_length = newline_ptr - start_ptr + 1;
+        while (total_bytes_received == socket_buffer_size) {
+            socket_buffer = realloc(socket_buffer, socket_buffer_size + SOCKET_CHUNK_SIZE);
 
-                // Write the complete packet to the file
-                if (write(file_fd, start_ptr, packet_length) == -1) {
-                    perror("File write failed");
-                    syslog(LOG_ERR, "File write failed: %s", strerror(errno));
-                    cleanup();
-                    return -1;
-                }
-
-                start_ptr = newline_ptr + 1; // Move to the next part of the buffer
-            }
-
-            // Handle any remaining data (incomplete packet)
-            if (start_ptr < buffer + bytes_received) {
-                size_t remaining_length = buffer + bytes_received - start_ptr;
-                if (write(file_fd, start_ptr, remaining_length) == -1) {
-                    perror("File write failed");
-                    syslog(LOG_ERR, "File write failed: %s", strerror(errno));
-                    cleanup();
-                    return -1;
-                }
-            }
-
-            // Send the full content of the file back to the client
-            lseek(file_fd, 0, SEEK_SET); // Reset file pointer to the beginning
-            while ((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0) {
-                if (send(client_socket, buffer, bytes_read, 0) == -1) {
-                    perror("Socket send failed");
-                    syslog(LOG_ERR, "Socket send failed: %s", strerror(errno));
-                    cleanup();
-                    return -1;
-                }
-            }
-
-            if (bytes_read == -1) {
-                perror("File read failed");
-                syslog(LOG_ERR, "File read failed: %s", strerror(errno));
+            if (!socket_buffer) {
+                syslog(LOG_ERR, "Unable to realloc %i bytes more", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 cleanup();
-                return -1;
             }
 
-            // Truncate the file to clear its contents
-            if (ftruncate(file_fd, 0) == -1) {
-                perror("File truncate failed");
-                syslog(LOG_ERR, "File truncate failed: %s", strerror(errno));
-                cleanup();
-                return -1;
-            }
+            ssize_t current_bytes_received = recv(client_socket, socket_buffer + socket_buffer_size, SOCKET_CHUNK_SIZE, 0);
+            total_bytes_received += current_bytes_received;
+            socket_buffer_size = socket_buffer_size + SOCKET_CHUNK_SIZE;
         }
 
-        if (bytes_received == -1) {
-            perror("Socket receive failed");
-            syslog(LOG_ERR, "Socket receive failed: %s", strerror(errno));
+        int nr = write(file_fd, socket_buffer, total_bytes_received);
+  
+        syslog(LOG_DEBUG, "Writing '%s' (%i bytes)", (char *)socket_buffer, total_bytes_received);
+
+        if (nr == -1) {
+            syslog(LOG_ERR,"Error writing data, %s", strerror(errno));
+            cleanup();
+        }
+
+        int filesize = (int)lseek(file_fd, 0, SEEK_END);
+        lseek(file_fd,0,SEEK_SET);
+        char *rdfile = malloc(filesize);
+
+        if (read(file_fd, rdfile, filesize) == -1) {
+            syslog(LOG_ERR,"Error reading file, %s\n", strerror(errno));
+            cleanup();
+        }
+        int bytes_sent = send(client_socket, rdfile, filesize, 0);
+            
+        if (bytes_sent == -1) {
+            syslog(LOG_ERR,"Error sending data, %s\n", strerror(errno));
+            cleanup();
         }
 
         syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
