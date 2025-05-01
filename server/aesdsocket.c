@@ -17,7 +17,7 @@
 int server_socket = -1; // Global variable for the server socket descriptor
 int client_socket = -1; // Global variable for the client socket descriptor
 int file_fd = -1; // Global variable for the file descriptor
-int running = 1; // Global flag to indicate if the server is running
+volatile sig_atomic_t running = 1; // Global flag to indicate if the server is running
 
 void cleanup() {
     // Close the client socket if it is open
@@ -39,12 +39,14 @@ void cleanup() {
 }
 
 void handle_signal(int sig, siginfo_t *info, void *context) {
-
+    (void)info;
+    (void)context;
     syslog(LOG_USER, "Caught signal %d, exiting", sig);
     printf("Caught signal %d, exiting\n", sig);
-
-    context = context;
-    cleanup();
+    running = 0;
+    if (server_socket != -1) {
+        shutdown(server_socket, SHUT_RDWR);
+    }
 }
 
 void daemonize() {
@@ -75,7 +77,7 @@ int main(int argc, char *argv[]) {
         syslog(LOG_ERR, "Failed to allocate initial buffer");
         return -1;
     }
-    
+
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
     struct sigaction act = { 0 };
@@ -110,7 +112,7 @@ int main(int argc, char *argv[]) {
         syslog(LOG_ERR,"setsockopt error: %s\n", strerror(errno));
         cleanup();
         exit(EXIT_FAILURE);
-    }      
+    }
 
     // Bind socket
     memset(&server_addr, 0, sizeof(server_addr));
@@ -146,23 +148,14 @@ int main(int argc, char *argv[]) {
     }
 
     while (running) {
-        if (server_socket == -1) {
-            perror("Invalid server socket");
-            syslog(LOG_ERR, "Invalid server socket");
-            cleanup();
-            free(socket_buffer);
-            return -1;
-        }
-
         client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
 
         if (client_socket == -1) {
             if (errno == EINTR) continue; // Interrupted by signal, check running flag
+            if (!running) break;
             perror("Socket accept failed");
             syslog(LOG_ERR, "Socket accept failed: %s", strerror(errno));
-            cleanup();
-            free(socket_buffer);
-            return -1;
+            break;
         }
 
         printf("Accepted connection from %s\n", inet_ntoa(client_addr.sin_addr));
@@ -187,7 +180,7 @@ int main(int argc, char *argv[]) {
         }
 
         int nr = write(file_fd, socket_buffer, total_bytes_received);
-  
+
         printf("Writing '%s' (%i bytes)\n", (char *)socket_buffer, total_bytes_received);
         syslog(LOG_DEBUG, "Writing '%s' (%i bytes)", (char *)socket_buffer, total_bytes_received);
 
@@ -199,7 +192,7 @@ int main(int argc, char *argv[]) {
 
         int filesize = (int)lseek(file_fd, 0, SEEK_END);
         lseek(file_fd, 0, SEEK_SET);
-        
+
         char *rdfile = malloc(filesize);
 
         if (read(file_fd, rdfile, filesize) == -1) {
@@ -211,7 +204,7 @@ int main(int argc, char *argv[]) {
         printf("Sending %i bytes\n", filesize);
 
         int bytes_sent = send(client_socket, rdfile, filesize, 0);
-            
+
         if (bytes_sent == -1) {
             syslog(LOG_ERR,"Error sending data, %s\n", strerror(errno));
             cleanup();
@@ -230,8 +223,10 @@ int main(int argc, char *argv[]) {
             cleanup();
             exit(EXIT_FAILURE);
         }
+        client_socket = -1;
     }
 
     cleanup(); // Cleanup server resources only when exiting the loop
+    free(socket_buffer);
     return 0;
 }
