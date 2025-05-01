@@ -27,12 +27,11 @@ void cleanup() {
     // Close the file descriptor if it is open
     if (file_fd != -1) {
         close(file_fd);
-        printf("Closed file descriptor\n");
+        syslog(LOG_INFO, "Closed file descriptor\n");
     }
     // Remove the temporary file
     remove(FILE_PATH);
     // Log a message indicating the server is exiting
-    printf("Caught signal, exiting\n");
     syslog(LOG_INFO, "Caught signal, exiting");
     // Close the system logger
     closelog();
@@ -42,7 +41,6 @@ void handle_signal(int sig, siginfo_t *info, void *context) {
     (void)info;
     (void)context;
     syslog(LOG_USER, "Caught signal %d, exiting", sig);
-    printf("Caught signal %d, exiting\n", sig);
     running = 0;
     if (server_socket != -1) {
         shutdown(server_socket, SHUT_RDWR);
@@ -158,7 +156,6 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        printf("Accepted connection from %s\n", inet_ntoa(client_addr.sin_addr));
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
 
         // Receive data dynamically
@@ -168,7 +165,6 @@ int main(int argc, char *argv[]) {
             socket_buffer = realloc(socket_buffer, socket_buffer_size + SOCKET_CHUNK_SIZE);
 
             if (!socket_buffer) {
-                printf("Unable to realloc %i bytes more\n", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 syslog(LOG_ERR, "Unable to realloc %i bytes more", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 cleanup();
                 exit(EXIT_FAILURE);
@@ -181,7 +177,6 @@ int main(int argc, char *argv[]) {
 
         int nr = write(file_fd, socket_buffer, total_bytes_received);
 
-        printf("Writing '%s' (%i bytes)\n", (char *)socket_buffer, total_bytes_received);
         syslog(LOG_DEBUG, "Writing '%s' (%i bytes)", (char *)socket_buffer, total_bytes_received);
 
         if (nr == -1) {
@@ -201,8 +196,6 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        printf("Sending %i bytes\n", filesize);
-
         int bytes_sent = send(client_socket, rdfile, filesize, 0);
 
         if (bytes_sent == -1) {
@@ -213,9 +206,7 @@ int main(int argc, char *argv[]) {
         }
         free(rdfile);
 
-        printf("Sent %i bytes from file to client\n", bytes_sent);
-
-        printf("Closing connection from %s\n", inet_ntoa(client_addr.sin_addr));
+        syslog(LOG_DEBUG, "Sent %i bytes from file to client\n", bytes_sent);
         syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
 
         if (close(client_socket) == -1) { // Close client socket after handling the connection
