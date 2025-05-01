@@ -41,9 +41,10 @@ void cleanup() {
 void handle_signal(int sig, siginfo_t *info, void *context) {
 
     syslog(LOG_USER, "Caught signal %d, exiting", sig);
-    int errsv = info->si_errno;
+    printf("Caught signal %d, exiting\n", sig);
+
     context = context;
-    cleanup(errsv == 0);
+    cleanup();
 }
 
 void daemonize() {
@@ -79,6 +80,7 @@ int main(int argc, char *argv[]) {
 
     struct sigaction act = { 0 };
     act.sa_sigaction = &handle_signal;
+    act.sa_flags = SA_SIGINFO;
 
     // Handle signals
     if (sigaction(SIGTERM, &act, NULL) == -1) {
@@ -86,8 +88,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     if (sigaction(SIGINT, &act, NULL) == -1) {
-            perror("sigaction SIGINT");
-            exit(EXIT_FAILURE);
+        perror("sigaction SIGINT");
+        exit(EXIT_FAILURE);
     }
 
     // Check for daemon mode
@@ -106,7 +108,8 @@ int main(int argc, char *argv[]) {
 
     if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0){
         syslog(LOG_ERR,"setsockopt error: %s\n", strerror(errno));
-        cleanup(-1);
+        cleanup();
+        exit(EXIT_FAILURE);
     }      
 
     // Bind socket
@@ -175,6 +178,7 @@ int main(int argc, char *argv[]) {
                 printf("Unable to realloc %i bytes more\n", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 syslog(LOG_ERR, "Unable to realloc %i bytes more", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 cleanup();
+                exit(EXIT_FAILURE);
             }
 
             ssize_t current_bytes_received = recv(client_socket, socket_buffer + socket_buffer_size, SOCKET_CHUNK_SIZE, 0);
@@ -190,6 +194,7 @@ int main(int argc, char *argv[]) {
         if (nr == -1) {
             syslog(LOG_ERR,"Error writing data, %s", strerror(errno));
             cleanup();
+            exit(EXIT_FAILURE);
         }
 
         int filesize = (int)lseek(file_fd, 0, SEEK_END);
@@ -200,6 +205,7 @@ int main(int argc, char *argv[]) {
         if (read(file_fd, rdfile, filesize) == -1) {
             syslog(LOG_ERR,"Error reading file, %s\n", strerror(errno));
             cleanup();
+            exit(EXIT_FAILURE);
         }
 
         printf("Sending %i bytes\n", filesize);
@@ -209,7 +215,10 @@ int main(int argc, char *argv[]) {
         if (bytes_sent == -1) {
             syslog(LOG_ERR,"Error sending data, %s\n", strerror(errno));
             cleanup();
+            free(rdfile);
+            exit(EXIT_FAILURE);
         }
+        free(rdfile);
 
         printf("Sent %i bytes from file to client\n", bytes_sent);
 
@@ -219,6 +228,7 @@ int main(int argc, char *argv[]) {
         if (close(client_socket) == -1) { // Close client socket after handling the connection
             syslog(LOG_ERR, "Error closing client socket: %s", strerror(errno));
             cleanup();
+            exit(EXIT_FAILURE);
         }
     }
 
