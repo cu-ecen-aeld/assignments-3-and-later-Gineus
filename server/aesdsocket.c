@@ -25,10 +25,14 @@ void cleanup() {
     // Close the server socket if it is open
     if (server_socket != -1) close(server_socket);
     // Close the file descriptor if it is open
-    if (file_fd != -1) close(file_fd);
+    if (file_fd != -1) {
+        close(file_fd);
+        printf("Closed file descriptor\n");
+    }
     // Remove the temporary file
     remove(FILE_PATH);
     // Log a message indicating the server is exiting
+    printf("Caught signal, exiting\n");
     syslog(LOG_INFO, "Caught signal, exiting");
     // Close the system logger
     closelog();
@@ -112,6 +116,16 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
+    file_fd = open(FILE_PATH, O_RDWR | O_CREAT, 0666);
+
+    if (file_fd == -1) {
+        perror("Failed to open file");
+        syslog(LOG_ERR, "Failed to open file %s: %s", FILE_PATH, strerror(errno));
+        cleanup();
+        free(socket_buffer);
+        return -1;
+    }
+
     while (running) {
         if (server_socket == -1) {
             perror("Invalid server socket");
@@ -132,18 +146,8 @@ int main(int argc, char *argv[]) {
             return -1;
         }
 
+        printf("Accepted connection from %s\n", inet_ntoa(client_addr.sin_addr));
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
-
-        // Open the file for reading and appending, create if it doesn't exist
-        file_fd = open(FILE_PATH, O_CREAT | O_RDWR | O_APPEND, 0644);
-
-        if (file_fd == -1) {
-            perror("Failed to open file");
-            syslog(LOG_ERR, "Failed to open file %s: %s", FILE_PATH, strerror(errno));
-            cleanup();
-            free(socket_buffer);
-            return -1;
-        }
 
         // Receive data dynamically
         total_bytes_received = recv(client_socket, socket_buffer, socket_buffer_size, 0);
@@ -152,6 +156,7 @@ int main(int argc, char *argv[]) {
             socket_buffer = realloc(socket_buffer, socket_buffer_size + SOCKET_CHUNK_SIZE);
 
             if (!socket_buffer) {
+                printf("Unable to realloc %i bytes more\n", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 syslog(LOG_ERR, "Unable to realloc %i bytes more", socket_buffer_size + SOCKET_CHUNK_SIZE);
                 cleanup();
             }
@@ -163,6 +168,7 @@ int main(int argc, char *argv[]) {
 
         int nr = write(file_fd, socket_buffer, total_bytes_received);
   
+        printf("Writing '%s' (%i bytes)\n", (char *)socket_buffer, total_bytes_received);
         syslog(LOG_DEBUG, "Writing '%s' (%i bytes)", (char *)socket_buffer, total_bytes_received);
 
         if (nr == -1) {
@@ -171,13 +177,17 @@ int main(int argc, char *argv[]) {
         }
 
         int filesize = (int)lseek(file_fd, 0, SEEK_END);
-        lseek(file_fd,0,SEEK_SET);
+        lseek(file_fd, 0, SEEK_SET);
+        
         char *rdfile = malloc(filesize);
 
         if (read(file_fd, rdfile, filesize) == -1) {
             syslog(LOG_ERR,"Error reading file, %s\n", strerror(errno));
             cleanup();
         }
+
+        printf("Sending %i bytes\n", filesize);
+
         int bytes_sent = send(client_socket, rdfile, filesize, 0);
             
         if (bytes_sent == -1) {
@@ -185,9 +195,15 @@ int main(int argc, char *argv[]) {
             cleanup();
         }
 
+        printf("Sent %i bytes from file to client\n", bytes_sent);
+
+        printf("Closing connection from %s\n", inet_ntoa(client_addr.sin_addr));
         syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
-        close(client_socket); // Close client socket after handling the connection
-        client_socket = -1;
+
+        if (close(client_socket) == -1) { // Close client socket after handling the connection
+            syslog(LOG_ERR, "Error closing client socket: %s", strerror(errno));
+            cleanup();
+        }
     }
 
     cleanup(); // Cleanup server resources only when exiting the loop
