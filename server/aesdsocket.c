@@ -38,10 +38,12 @@ void cleanup() {
     closelog();
 }
 
-void signal_handler(int signo) {
-    running = 0; // Stop the server loop
-    cleanup();   // Perform cleanup
-    exit(EXIT_SUCCESS); // Exit the program
+void handle_signal(int sig, siginfo_t *info, void *context) {
+
+    syslog(LOG_USER, "Caught signal %d, exiting", sig);
+    int errsv = info->si_errno;
+    context = context;
+    cleanup(errsv == 0);
 }
 
 void daemonize() {
@@ -75,9 +77,18 @@ int main(int argc, char *argv[]) {
     
     openlog("aesdsocket", LOG_PID, LOG_USER);
 
+    struct sigaction act = { 0 };
+    act.sa_sigaction = &handle_signal;
+
     // Handle signals
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    if (sigaction(SIGTERM, &act, NULL) == -1) {
+        perror("sigaction SIGTERM");
+        exit(EXIT_FAILURE);
+    }
+    if (sigaction(SIGINT, &act, NULL) == -1) {
+            perror("sigaction SIGINT");
+            exit(EXIT_FAILURE);
+    }
 
     // Check for daemon mode
     if (argc == 2 && strcmp(argv[1], "-d") == 0) {
@@ -92,6 +103,11 @@ int main(int argc, char *argv[]) {
         free(socket_buffer);
         return -1;
     }
+
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0){
+        syslog(LOG_ERR,"setsockopt error: %s\n", strerror(errno));
+        cleanup(-1);
+    }      
 
     // Bind socket
     memset(&server_addr, 0, sizeof(server_addr));
